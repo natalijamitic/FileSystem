@@ -3,11 +3,13 @@
 
 #include <iostream>
 #include <Windows.h>
-#include <string>
-using std::string;
 #include "particija-VS2017/part.h"
 #include "fs.h"
 #include "criticalSectionInit.h"
+#include <string>
+using std::string;
+#include <vector>
+using std::vector;
 
 #define signal(x) ReleaseSemaphore(x,1,NULL)
 #define wait(x) WaitForSingleObject(x,INFINITE)
@@ -18,6 +20,8 @@ class File;
 class KernelFile;
 
 const unsigned short BITS_IN_BYTE = 8;
+const char emptyCluster[ClusterSize] = { 0 };
+
 
 class KernelFS {
 public:
@@ -31,14 +35,14 @@ public:
 	static File* open(char* fname, char mode);
 	static char deleteFile(char* fname);
 
-public:
+public: //prebaci posle u private
+	friend class CriticalSectionInit;
 
 	static CRITICAL_SECTION mutex;
 	static HANDLE semFilesClosed;
 	static HANDLE semUnmount;
+	static HANDLE semFormat;
 	static CriticalSectionInit init;
-
-	friend class CriticalSectionInit;
 
 	static Partition* myPartition;
 	static bool filesOpened;
@@ -46,12 +50,35 @@ public:
 	static ClusterNo clusterCount;
 
 	static ClusterNo getFileFirstIndex(char* text);
+	static void setFileFirstIndex(char* text, ClusterNo clusterNumber);
+
 	static BytesCnt getFileSize(char* text);
+	static void setFileSize(char* text, BytesCnt fileSize);
+
 	static string getFileName(string text);
+	static void setFileName(string& text, string fname);
+
 	static string getFileExt(string text);
+	static void setFileExt(string& text, string fext);
+
 	static string getFileNameFromPath(string text);
 	static string getFileExtFromPath(string text);
 
+	static string setFileData(ClusterNo clusterNumber, BytesCnt fileSize, char* fname, char* fext);
+
+	struct FileIndexes {
+		ClusterNo fileFirstIndex, rootSecondIndex, rootDataIndex;
+		FileIndexes(ClusterNo f, ClusterNo s, ClusterNo d) {
+			fileFirstIndex = f;
+			rootSecondIndex = s;
+			rootDataIndex = d;
+		}
+	};
+
+	static FileIndexes getFileIndexes(char* fname);
+	static void deleteFileIndexes(FileIndexes fileIndexes);
+	static void deleteRootIndexes(char* fname, FileIndexes fileIndexes);
+	static void freeClusterInBitVector(vector<ClusterNo>clusterNumbers);
 	static char doesExistNotSynch(char* fname);
 
 };
