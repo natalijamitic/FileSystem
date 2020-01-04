@@ -1,14 +1,21 @@
 #ifndef _KERNELFILE_H_
 #define _KERNELFILE_H_
 
-#include "particija-VS2017/part.h"
-#include "fs.h"
+
 #include <string>
 using std::string;
+#include "particija-VS2017/part.h"
+#include "fs.h"
+
+class FCB;
 
 class KernelFile {
 public:
 	//KernelFile(ClusterNo indexCluster, char writable, string name, string ext, BytesCnt size);
+	KernelFile(FCB* f, BytesCnt c) {
+		fcb = f;
+		cursor = c;
+	}
 	//~KernelFile();
 
 	//char write(BytesCnt, char* buffer);
@@ -19,22 +26,14 @@ public:
 	BytesCnt getFileSize();
 	//char truncate();
 
-	string getName() const { return name; }
-	string getExt() const { return ext; }
-
 	//void updateSize();
 
 	//const BytesCnt MAX_SIZE = Index::MAX_CLUSTERS * Cluster_Size;
 private:
-	string name;
-	string ext;
 	BytesCnt cursor = 0;
-	BytesCnt size;
-
+	BytesCnt fileSize;
 	char writable;
-
-	//Index index;
-	//ClusterCache clusterCache;
+	FCB* fcb;
 
 };
 
