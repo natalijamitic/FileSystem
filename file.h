@@ -2,6 +2,7 @@
 #define _FILE_H_
 
 #include "fs.h"
+#include "FCB.h"
 
 class KernelFile;
 
@@ -19,6 +20,7 @@ private:
 	friend class FS;
 	friend class KernelFS;
 	File(); //objekat fajla se može kreirati samo otvaranjem
+	File(FCB* f, BytesCnt cursor);
 	KernelFile* myImpl;
 };
 
