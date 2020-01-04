@@ -433,7 +433,7 @@ string KernelFS::setFileData(ClusterNo clusterNumber, BytesCnt fileSize, char* f
 	setFileName(ret, fname);
 	setFileExt(ret, fext);
 
-	delete fileData;
+	delete [] fileData;
 
 	return ret;
 }
