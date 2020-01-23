@@ -20,7 +20,7 @@ private:
 	friend class FS;
 	friend class KernelFS;
 	File(); //objekat fajla se može kreirati samo otvaranjem
-	File(FCB* f, BytesCnt cursor);
+	File(string name, char mode, BytesCnt size, ClusterNo cluster, BytesCnt cursor);
 	KernelFile* myImpl;
 };
 
