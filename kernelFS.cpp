@@ -1,6 +1,5 @@
 //DODATI ZA SVAKU FJU PROVERU DA L JE PARTICIJA NAKACENA I DA LI SE TRENUTNO FORMATIRA!
 
-//filesOpened kada se setuje? da li tu treba gledati iz tabele otvorenih fajlova
 //KADA SE IZBACUJE IZ TABELE OTVORENIH FAJLOVA?!
 
 #include "kernelFS.h"
@@ -9,21 +8,18 @@
 #include "file.h"
 #include "FCB.h"
 
-
+CriticalSectionInit KernelFS::init;
 CRITICAL_SECTION KernelFS::mutex;
 HANDLE KernelFS::semFilesClosed = CreateSemaphore(NULL, 1, 32, NULL);
 HANDLE KernelFS::semUnmount = CreateSemaphore(NULL, 1, 32, NULL);
 HANDLE KernelFS::semFormat = CreateSemaphore(NULL, 1, 32, NULL);
 
 Partition* KernelFS::myPartition = nullptr;
-bool KernelFS::filesOpened = false;
 bool KernelFS::beingFormatted = false;
 ClusterNo KernelFS::clusterCount = 0;
 
-map<string, FCB*>* KernelFS::openFileTable = new map<string, FCB*>();
-map<string, HANDLE>* KernelFS::semMapFileClosed = new map<string, HANDLE>();
+map<string, FCB>* KernelFS::openFileTable = new map<string, FCB>();
 
-CriticalSectionInit KernelFS::init;
 
 
 char KernelFS::mount(Partition* partition) {
@@ -34,7 +30,7 @@ char KernelFS::mount(Partition* partition) {
 		return 0;
 	}
 
-	if (myPartition != nullptr) {
+	while (myPartition != nullptr) { //WHILE ILI IF
 		LeaveCriticalSection(&mutex);
 		wait(semUnmount);
 		EnterCriticalSection(&mutex);
@@ -55,7 +51,7 @@ char KernelFS::unmount() {
 		return 0;
 	}
 
-	if (filesOpened) {
+	while (getCountOfOpenFiles() > 0) { //WHILE ILI IF
 		LeaveCriticalSection(&mutex);
 		wait(semFilesClosed);
 		EnterCriticalSection(&mutex);
@@ -78,7 +74,7 @@ char KernelFS::format() {
 
 	beingFormatted = true;
 
-	if (filesOpened) {
+	while (getCountOfOpenFiles() > 0) { //WHILE ILI IF
 		LeaveCriticalSection(&mutex);
 		wait(semFilesClosed);
 		EnterCriticalSection(&mutex);
@@ -105,7 +101,12 @@ char KernelFS::format() {
 	return 1;
 }
 
+
+
 FileCnt KernelFS::readRootDir() {
+	if (myPartition == nullptr)
+		return -1;
+	//AKO NEKO RADI MOUNT UNMOUNT ILI FORMAT ONDA ZABRANITI???
 	EnterCriticalSection(&mutex);
 
 	char rootDir[ClusterSize];
@@ -146,6 +147,8 @@ FileCnt KernelFS::readRootDir() {
 	return fileCount;
 }
 
+
+
 char KernelFS::doesExist(char* fname) {
 	EnterCriticalSection(&mutex);
 
@@ -154,110 +157,142 @@ char KernelFS::doesExist(char* fname) {
 	LeaveCriticalSection(&mutex);
 	return 0;
 }
+//treba odvojeno da izbegnem dupli mutex
+char KernelFS::doesExistNotSynch(char* fname) {
+	if (myPartition == nullptr)
+		return 0;
+	//AKO NEKO RADI MOUNT UNMOUNT ILI FORMAT ONDA ZABRANITI???
+
+	FileIndexes fileIndexes(getFileIndexes(fname));
+	if (fileIndexes.fileFirstIndex == 0 && fileIndexes.rootDataIndex == 0 && fileIndexes.rootSecondIndex == 0)
+		return 0;
+	else
+		return 1;
+}
+
 
 
 File* KernelFS::open(char* fname, char mode) {
+	if (fname == nullptr || myPartition == nullptr)
+		return nullptr;
+	//AKO NEKO RADI MOUNT UNMOUNT ILI FORMAT ONDA ZABRANITI???
 	EnterCriticalSection(&mutex);
 	File* ret = nullptr;
 	
-	if (beingFormatted) {
+	while (beingFormatted) {	//WHILE ILI IF
 		LeaveCriticalSection(&mutex);
 		wait(semFormat);
 		EnterCriticalSection(&mutex);
 	}
 
-	bool fileIsOpen = false;
-	bool fileExists = false;
-	
-	if (doesExistNotSynch(fname)) {
-		fileExists = true;
+	if (myPartition == nullptr)
+		return nullptr;
 
-		string fileName = getFileNameFromPath(fname) + getFileExtFromPath(fname);
-		
-		if (openFileTable->find(fileName) == openFileTable->end())
-			fileIsOpen = false;
-		else
-			fileIsOpen = true;
+	
+	bool fileIsOpen = isFileOpen(fname);
+
+	if (fileIsOpen) {
+		FCB fcb = openFileTable->find(getFileNameFromPath(fname) + getFileExtFromPath(fname))->second;
+		if (mode != 'r' || (mode == 'r' && fcb.mode != mode)) {
+			while (!fcb.closedFile) { // WHILE ILI IF
+				LeaveCriticalSection(&mutex);
+				wait(fcb.semFile);
+				EnterCriticalSection(&mutex);
+			}
+			fileIsOpen = false; //PROVERA
+		}
 	}
 
+	bool fileExists = doesExistNotSynch(fname);
+
+	switch (mode) {
+	case 'w':
+		openForWrite(fname, mode, fileIsOpen, fileExists);
+	case 'r':
+		openForRead(fname, mode, fileIsOpen, fileExists);
+	case 'a':
+		openForAppend(fname, mode, fileIsOpen, fileExists);
+	default: 
+		ret = nullptr;
+	}
+	
+
+
+	LeaveCriticalSection(&mutex);
+	return ret;
+}
+
+File* KernelFS::openForWrite(char* fname, char mode, bool fileIsOpen, bool fileExists) {
+	File* ret = nullptr;
+
 	if (!fileExists) {
-		switch (mode) {
-		case 'w': {
+		std::pair<ClusterNo, BytesCnt> pair = writeFileInRoot(fname);
+		if (pair.first == 0 && pair.second == 0)
+			ret = nullptr;
+		else
+			ret = createFile(fname, mode, pair);
+	}
+	else {
+		if (!fileIsOpen) {
+			deleteFileNotSynch(fname);
 			std::pair<ClusterNo, BytesCnt> pair = writeFileInRoot(fname);
 			if (pair.first == 0 && pair.second == 0)
 				ret = nullptr;
 			else
 				ret = createFile(fname, mode, pair);
-			break;
 		}
-		case 'r':
-		case 'a':
-		default:
-			ret = nullptr;
+		else {
+			//obradjeno prethodno nece uci nikad
 		}
+	}
+	return ret;
+}
+
+File* KernelFS::openForRead(char* fname, char mode, bool fileIsOpen, bool fileExists) {
+	File* ret = nullptr;
+
+	if (!fileExists) {
+		ret = nullptr;
 	}
 	else {
 		if (!fileIsOpen) {
-			switch (mode) {
-			case 'w': {
-				deleteFileNotSynch(fname);
-				std::pair<ClusterNo, BytesCnt> pair = writeFileInRoot(fname);
-				if (pair.first == 0 && pair.second == 0)
-					ret = nullptr;
-				else
-					ret = createFile(fname, mode, pair);
-				break;
-			}
-			case 'r': {
-				KernelFS::FileIndexes fileIndexes = getFileIndexes(fname);
-				ret = createFile(fname, mode, std::make_pair(fileIndexes.rootDataIndex, fileIndexes.offsetInRootDataIndex));
-				break;
-			}
-			case 'a': {
-				KernelFS::FileIndexes fileIndexes = getFileIndexes(fname);
-				std::pair<ClusterNo, BytesCnt> pair = writeFileInRoot(fname);
-				if (pair.first == 0 && pair.second == 0)
-					ret = nullptr;
-				else
-					ret = createFile(fname, mode, pair);
-				break;
-			}
-			default:
-				ret = nullptr;
-			}
+			FileIndexes fileIndexes = getFileIndexes(fname);
+			ret = createFile(fname, mode, std::make_pair(fileIndexes.rootDataIndex, fileIndexes.offsetInRootDataIndex));
 		}
 		else {
-			switch (mode) {
-			case 'w': //cekaj ducu
-				break;
-			case 'r': {
-				string name = getFileNameFromPath(fname);
-				string ext = getFileExtFromPath(fname);
-				FCB* fcb = openFileTable->find(name + ext)->second;
-				if (fcb->getMode() == 'w' || fcb->getMode() == 'a') {
-					LeaveCriticalSection(&mutex);
-					wait(semMapFileClosed->find(name + ext)->second);
-					EnterCriticalSection(&mutex);
-					semMapFileClosed->erase(name + ext);
-					KernelFS::FileIndexes fileIndexes = getFileIndexes(fname);
-					ret = createFile(fname, mode, std::make_pair(fileIndexes.rootDataIndex, fileIndexes.offsetInRootDataIndex));
-				}
-				else {
-					fcb->addRef();
-					ret = new File(fcb, 0);
-				}
-				break;
+			FCB fcb = openFileTable->find(getFileNameFromPath(fname) + getFileExtFromPath(fname))->second;
+			if (fcb.mode == 'w' || fcb.mode == 'a') {
+				//obradjeno prethodno nece uci nikad				
 			}
-			case 'a': //cekaj ducu
-				break;
-			default:
-				ret = nullptr;
+			else {
+				fcb.numOfRefs++;
+				ret = new File(fname, mode, fcb.fileSize, fcb.fileFirstIndex, 0);
 			}
 		}
 	}
+	return ret;
+}
 
-	LeaveCriticalSection(&mutex);
-	return nullptr;
+File* KernelFS::openForAppend(char* fname, char mode, bool fileIsOpen, bool fileExists) {
+	File* ret = nullptr;
+
+	if (!fileExists) {
+		ret = nullptr;
+	}
+	else {
+		if (!fileIsOpen) {
+			FileIndexes fileIndexes = getFileIndexes(fname);
+			std::pair<ClusterNo, BytesCnt> pair = writeFileInRoot(fname);
+			if (pair.first == 0 && pair.second == 0)
+				ret = nullptr;
+			else
+				ret = createFile(fname, mode, pair);
+		}
+		else {
+			//obradjeno prethodno nece uci nikad
+		}
+	}
+	return ret;
 }
 
 std::pair<ClusterNo, BytesCnt> KernelFS::findFreeSpotInCluster() {
@@ -294,7 +329,7 @@ std::pair<ClusterNo, BytesCnt> KernelFS::findFreeSpotInCluster() {
 
 			char fileInfoCluster[ClusterSize];
 			myPartition->readCluster(fileInfoIndex, fileInfoCluster);
-			
+
 			for (int k = 0; k < ClusterSize; k += 32)
 				if (fileInfoCluster[k] == 0)
 					return std::make_pair(fileInfoIndex, k);
@@ -322,9 +357,12 @@ std::pair<ClusterNo, BytesCnt> KernelFS::findFreeSpotInCluster() {
 		char rootDir[ClusterSize];
 		myPartition->readCluster(1, rootDir);
 
+		//provera da l moze oba klastera da nadje
 		ClusterNo newClusterSecondIndex = findFreeCluster();
-		if (newClusterSecondIndex == -1)
+		ClusterNo newFileInfoNo = findFreeCluster();
+		if (newClusterSecondIndex == -1 || newFileInfoNo == -1)
 			return std::make_pair(0, 0);
+
 		myPartition->writeCluster(newClusterSecondIndex, emptyCluster);
 
 		char* newClusterSecond = (char*)(&newClusterSecondIndex);
@@ -335,9 +373,6 @@ std::pair<ClusterNo, BytesCnt> KernelFS::findFreeSpotInCluster() {
 		char secondIndexCluster[ClusterSize];
 		myPartition->readCluster(newClusterSecondIndex, secondIndexCluster);
 
-		ClusterNo newFileInfoNo = findFreeCluster();
-		if (newFileInfoNo == -1)
-			return std::make_pair(0, 0);
 		myPartition->writeCluster(newFileInfoNo, emptyCluster);
 
 		char* newFileInfo = (char*)(&newFileInfoNo);
@@ -347,7 +382,7 @@ std::pair<ClusterNo, BytesCnt> KernelFS::findFreeSpotInCluster() {
 		return std::make_pair(newFileInfoNo, 0);
 	}
 
-	return std::make_pair(0,0);
+	return std::make_pair(0, 0);
 
 }
 
@@ -377,7 +412,7 @@ std::pair<ClusterNo, BytesCnt> KernelFS::writeFileInRoot(char* fname) {
 		return pair;
 
 	string fileInfo = setFileData(0, 0, getFileNameFromPath(fname).data(), getFileExtFromPath(fname).data());
-	
+
 	unsigned char fileDataCluster[ClusterSize];
 	myPartition->readCluster(pair.first, (char*)fileDataCluster);
 	memcpy(fileDataCluster + pair.second, fileInfo.data(), 32);
@@ -388,43 +423,58 @@ std::pair<ClusterNo, BytesCnt> KernelFS::writeFileInRoot(char* fname) {
 
 File* KernelFS::createFile(char* fname, char mode, std::pair<ClusterNo, BytesCnt> pair) {
 	string fileName = getFileNameFromPath(fname) + getFileExtFromPath(fname);
-	FCB* fcb = new FCB(pair.first, pair.second, mode, fileName);
-	openFileTable->insert(std::pair<string, FCB*>(getFileNameFromPath(fname) + getFileExtFromPath(fname), fcb));
-	semMapFileClosed->insert(std::pair<string, HANDLE>(getFileNameFromPath(fname) + getFileExtFromPath(fname), CreateSemaphore(NULL, 0, 32, NULL)));
+
+	char fileData[ClusterSize];
+	myPartition->readCluster(pair.first, fileData);
+
+	FCB fcb(getFileFirstIndex(fileData), pair.first, pair.second, mode, fileName);
 	
+	map<string, FCB>::iterator it = openFileTable->begin();
+	it = openFileTable->find(fname);
+	openFileTable->erase(it);
+
+	openFileTable->insert(std::pair<string, FCB>(fileName, fcb));
+
 	switch (mode) {
 	case 'r':
+		fcb.fileSize = getFileSize(fileData + pair.second);
+		return new File(fname, mode, fcb.fileSize, fcb.fileFirstIndex, 0);
 	case 'w':
-		return new File(fcb, 0);
+		fcb.fileSize = 0;
+		return new File(fname, mode, fcb.fileSize, fcb.fileFirstIndex, 0);
 	case 'a':
-		char fileData[ClusterSize];
-		myPartition->readCluster(pair.first, fileData);
-		return new File(fcb, getFileSize(fileData + pair.second));
+		fcb.fileSize = getFileSize(fileData + pair.second);
+		return new File(fname, mode, fcb.fileSize, fcb.fileFirstIndex, fcb.fileSize);
+	default:
+		return nullptr;
 	}
-	//return null;
+
+	return nullptr;
 }
+
+
 
 char KernelFS::deleteFile(char* fname) {
+	if (myPartition == nullptr)
+		return 0;
+	//AKO NEKO RADI MOUNT UNMOUNT ILI FORMAT ONDA ZABRANITI???
 	EnterCriticalSection(&mutex);
 
-	if (deleteFileNotSynch(fname) == 0) {
-		LeaveCriticalSection(&mutex);
-		return 0;
-	}
+	char ret = deleteFileNotSynch(fname);
 
 	LeaveCriticalSection(&mutex);
-	return 1;
+	return ret;
 }
-
 char KernelFS::deleteFileNotSynch(char* fname) {
 	if (!isFileOpen(fname)) { 
-		FileIndexes fileIndexes(getFileIndexes(fname));
+		FileIndexes fileIndexes = getFileIndexes(fname); //ili fileIndexes(getFileIndexes(fname));
 
+		//file doesn't exist
 		if (fileIndexes.fileFirstIndex == 0 && fileIndexes.rootDataIndex == 0 && fileIndexes.rootSecondIndex == 0)
 			return 0;
 
 		deleteFileIndexes(fileIndexes);
-		deleteRootIndexes(fname, fileIndexes);
+		deleteRootIndexes(fname, fileIndexes); //da li treba ovo?
 	}
 	else
 		return 0;
@@ -432,42 +482,73 @@ char KernelFS::deleteFileNotSynch(char* fname) {
 	return 1;
 }
 
-bool KernelFS::isFileOpen(char* fname) {
-	return openFileTable->find(getFileNameFromPath(fname) + getFileExtFromPath(fname)) != openFileTable->end();
+FileIndexes KernelFS::getFileIndexes(char* fname) {
+	char rootDir[ClusterSize];
+	myPartition->readCluster(1, rootDir);
+
+	for (unsigned long i = 0; i < ClusterSize; i += 4) {
+
+		unsigned long secondIndex = *(unsigned long*)(rootDir + i);
+
+		if (secondIndex == 0)
+			continue;
+
+		char secondIndexCluster[ClusterSize];
+		myPartition->readCluster(secondIndex, secondIndexCluster);
+
+		for (unsigned long j = 0; j < ClusterSize; j += 4) {
+
+			unsigned long fileInfoIndex = *(unsigned long*)(secondIndexCluster + j);
+
+			if (fileInfoIndex == 0)
+				continue;
+
+			char fileInfoCluster[ClusterSize];
+			myPartition->readCluster(fileInfoIndex, fileInfoCluster);
+
+			for (unsigned long k = 0; k < ClusterSize; k += 32) {
+
+				if (fileInfoCluster[k] == 0)
+					continue;
+
+				if (!getFileNameFromPath(fname).compare(getFileName(fileInfoCluster + k)) && !getFileExtFromPath(fname).compare(getFileExt(fileInfoCluster + k)))
+					return FileIndexes(getFileFirstIndex(fileInfoCluster + k), secondIndex, fileInfoIndex, k);
+
+			}
+		}
+	}
+	return FileIndexes(0, 0, 0);
 }
 
-void KernelFS::deleteRootIndexes(char* fname, KernelFS::FileIndexes fileIndexes) {
+void KernelFS::deleteRootIndexes(char* fname, FileIndexes fileIndexes) {
 	vector<ClusterNo> clustersToFree;
 	int count = 0;
 
 	char fileData[ClusterSize];
 	myPartition->readCluster(fileIndexes.rootDataIndex, fileData);
-
-	for (unsigned long i = 0; i < ClusterSize && count <= 2; i += 32) {
+	
+	fileData[fileIndexes.offsetInRootDataIndex] = 0;
+	for (unsigned long i = 0; i < ClusterSize && count == 0; i += 32) {
 		if (fileData[i] == 0)
 			continue;
-		if (!getFileName(fileData + i).compare(getFileNameFromPath(fname)) && !getFileExt(fileData + i).compare(getFileExtFromPath(fname)))
-			fileData[i] = 0;
 		count++;
 	}
 
-	if (count == 1) {
-		for (unsigned long i = 0; i < ClusterSize; i += 1)
+	if (count == 0) {
+		for (unsigned long i = 0; i < ClusterSize; i++)
 			fileData[i] = 0;
 		clustersToFree.push_back(fileIndexes.rootDataIndex);
+		myPartition->writeCluster(fileIndexes.rootDataIndex, fileData);
 
 		int count2 = 0;
-
-		myPartition->writeCluster(fileIndexes.rootDataIndex, fileData);
 
 		char secondCluster[ClusterSize];
 		myPartition->readCluster(fileIndexes.rootSecondIndex, secondCluster);
 
-		for (unsigned long i = 0; i < ClusterSize && count2 <= 2; i += 4) {
+		*(unsigned long*)(secondCluster + fileIndexes.rootDataIndex) = 0;
+		for (unsigned long i = 0; i < ClusterSize && count2 == 0; i += 4) {
 			if (*(unsigned long*)(secondCluster + i) == 0)
 				continue;
-			if (*(unsigned long*)(secondCluster + i) == fileIndexes.rootDataIndex)
-				* (unsigned long*)(secondCluster + i) = 0;
 			count2++;
 		}
 
@@ -479,10 +560,7 @@ void KernelFS::deleteRootIndexes(char* fname, KernelFS::FileIndexes fileIndexes)
 			char rootDir[ClusterSize];
 			myPartition->readCluster(1, rootDir);
 
-			for (unsigned long i = 0; i < ClusterSize; i += 4) {
-				if (*(unsigned long*)(rootDir + i) == fileIndexes.rootSecondIndex)
-					* (unsigned long*)(rootDir + i) = 0;
-			}
+			*(unsigned long*)(rootDir + fileIndexes.rootSecondIndex) = 0;
 
 			myPartition->writeCluster(1, rootDir);
 		}
@@ -490,14 +568,19 @@ void KernelFS::deleteRootIndexes(char* fname, KernelFS::FileIndexes fileIndexes)
 	else
 		myPartition->writeCluster(fileIndexes.rootDataIndex, fileData);
 
-	freeClusterInBitVector(clustersToFree);
+	if (clustersToFree.size() > 0)
+		freeClusterInBitVector(clustersToFree);
 }
-
-void KernelFS::deleteFileIndexes(KernelFS::FileIndexes fileIndexes) {
+//proveri jos jednom da l moze da se desi da ako nadjem prvu nulu da posle toga ipak bude negde unos validan
+void KernelFS::deleteFileIndexes(FileIndexes fileIndexes) {
 	bool breakLoop = false;
 	vector<ClusterNo> clustersToFree;
 
 	ClusterNo fileFirstIndex = fileIndexes.fileFirstIndex;
+	
+	if (fileFirstIndex == 0)
+		return;
+
 	char fileFirstIndexCluster[ClusterSize];
 	myPartition->readCluster(fileFirstIndex, fileFirstIndexCluster);
 
@@ -537,86 +620,8 @@ void KernelFS::deleteFileIndexes(KernelFS::FileIndexes fileIndexes) {
 	myPartition->writeCluster(fileFirstIndex, fileFirstIndexCluster);
 	clustersToFree.push_back(fileFirstIndex);
 
-	freeClusterInBitVector(clustersToFree);
-}
-
-//treba odvojeno da izbegnem dupli mutex
-char KernelFS::doesExistNotSynch(char* fname) {
-	char rootDir[ClusterSize];
-	myPartition->readCluster(1, rootDir);
-
-	for (unsigned long i = 0; i < ClusterSize; i += 4) {
-
-		unsigned long secondIndex = *(unsigned long*)(rootDir + i);
-
-		if (secondIndex == 0)
-			continue;
-
-		char secondIndexCluster[ClusterSize];
-		myPartition->readCluster(secondIndex, secondIndexCluster);
-
-		for (unsigned long j = 0; j < ClusterSize; j += 4) {
-
-			unsigned long fileInfoIndex = *(unsigned long*)(secondIndexCluster + j);
-
-			if (fileInfoIndex == 0)
-				continue;
-
-			char fileInfoCluster[ClusterSize];
-			myPartition->readCluster(fileInfoIndex, fileInfoCluster);
-
-			for (int k = 0; k < ClusterSize; k += 32) {
-
-				if (fileInfoCluster[k] == 0)
-					continue;
-
-				if (!getFileNameFromPath(fname).compare(getFileName(fileInfoCluster + k)) && !getFileExtFromPath(fname).compare(getFileExt(fileInfoCluster + k))) {
-					LeaveCriticalSection(&mutex);
-					return 1;
-				}
-
-			}
-		}
-	}
-	return 0;
-}
-
-KernelFS::FileIndexes KernelFS::getFileIndexes(char* fname) {
-	char rootDir[ClusterSize];
-	myPartition->readCluster(1, rootDir);
-
-	for (unsigned long i = 0; i < ClusterSize; i += 4) {
-
-		unsigned long secondIndex = *(unsigned long*)(rootDir + i);
-
-		if (secondIndex == 0)
-			continue;
-
-		char secondIndexCluster[ClusterSize];
-		myPartition->readCluster(secondIndex, secondIndexCluster);
-
-		for (unsigned long j = 0; j < ClusterSize; j += 4) {
-
-			unsigned long fileInfoIndex = *(unsigned long*)(secondIndexCluster + j);
-
-			if (fileInfoIndex == 0)
-				continue;
-
-			char fileInfoCluster[ClusterSize];
-			myPartition->readCluster(fileInfoIndex, fileInfoCluster);
-
-			for (unsigned long k = 0; k < ClusterSize; k += 32) {
-
-				if (fileInfoCluster[k] == 0)
-					continue;
-
-				if (!getFileNameFromPath(fname).compare(getFileName(fileInfoCluster + k)) && !getFileExtFromPath(fname).compare(getFileExt(fileInfoCluster + k)))
-					return FileIndexes(getFileFirstIndex(fileInfoCluster + k), secondIndex, fileInfoIndex, k);
-
-			}
-		}
-	}
-	return FileIndexes(0, 0, 0);
+	if (clustersToFree.size() > 0)
+		freeClusterInBitVector(clustersToFree);
 }
 
 void KernelFS::freeClusterInBitVector(vector<ClusterNo> clusterNumbers) {
@@ -634,6 +639,23 @@ void KernelFS::freeClusterInBitVector(vector<ClusterNo> clusterNumbers) {
 
 	myPartition->writeCluster(0, (char*)bitVector);
 }
+
+
+
+bool KernelFS::isFileOpen(char* fname) {
+	return openFileTable->find(getFileNameFromPath(fname) + getFileExtFromPath(fname)) != openFileTable->end();
+}
+
+int KernelFS::getCountOfOpenFiles() {
+	int count = 0;
+	for (auto it = openFileTable->begin(); it != openFileTable->end(); it++)
+		count += (*it).second.numOfRefs;
+	return count;
+}
+
+
+
+//Get&Set  FileData
 
 ClusterNo KernelFS::getFileFirstIndex(char* text) {
 	return *(ClusterNo*)(text + 12);
