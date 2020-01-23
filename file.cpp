@@ -37,6 +37,8 @@ char File::truncate() {
 	return 0;
 }
 
-File::File(FCB* fcb, BytesCnt cursor) {
-	myImpl = new KernelFile(fcb, cursor);
+File::File(string name, char mode, BytesCnt size, ClusterNo cluster, BytesCnt cursor){
+	myImpl = new KernelFile(name, mode, size, cluster, cursor);
 }
+
+
