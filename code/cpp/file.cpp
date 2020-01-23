@@ -36,3 +36,7 @@ char File::truncate() {
 	//return myImpl->truncate();
 	return 0;
 }
+
+File::File(string name, char mode, BytesCnt size, ClusterNo cluster, BytesCnt cursor){
+	myImpl = new KernelFile(name, mode, size, cluster, cursor);
+}
