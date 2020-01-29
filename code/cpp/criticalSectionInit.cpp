@@ -4,4 +4,5 @@
 
 CriticalSectionInit::CriticalSectionInit() {
 	InitializeCriticalSection(&KernelFS::mutex);
+	InitializeCriticalSection(&KernelFS::mutexAllocator);
 }

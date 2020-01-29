@@ -31,6 +31,7 @@ public:
 
 	static File* open(char* fname, char mode);
 	static char deleteFile(char* fname);
+
 protected:
 	FS();
 	static KernelFS* myImpl;

@@ -6,14 +6,11 @@ File::~File() {
 }
 
 char File::write(BytesCnt cnt, char* buffer) {
-	//return myImpl->write(cnt, buffer);
-	return 0;
+	return myImpl->write(cnt, buffer);
 }
 
 BytesCnt File::read(BytesCnt cnt, char* buffer) {
-	//return myImpl->read(cnt, buffer);
-	return 0;
-
+	return myImpl->read(cnt, buffer);
 }
 
 char File::seek(BytesCnt cnt) {
@@ -33,8 +30,7 @@ BytesCnt File::getFileSize() {
 }
 
 char File::truncate() {
-	//return myImpl->truncate();
-	return 0;
+	return myImpl->truncate();
 }
 
 File::File(string name, char mode, BytesCnt size, ClusterNo cluster, BytesCnt cursor){

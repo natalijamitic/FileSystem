@@ -44,6 +44,7 @@ private:
 	friend class CriticalSectionInit;
 
 	static CRITICAL_SECTION mutex;
+	static CRITICAL_SECTION mutexAllocator;
 	static HANDLE semFilesClosed;
 	static HANDLE semUnmount;
 	static HANDLE semFormat;
@@ -75,7 +76,7 @@ private:
 
 	static char deleteFileNotSynch(char* fname);
 	static void deleteFileIndexes(FileIndexes fileIndexes);
-	static void deleteRootIndexes(char* fname, FileIndexes fileIndexes);
+	//static void deleteRootIndexes(char* fname, FileIndexes fileIndexes);
 	static void freeClusterInBitVector(vector<ClusterNo>clusterNumbers);
 
 	static char doesExistNotSynch(char* fname);

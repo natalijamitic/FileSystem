@@ -28,23 +28,19 @@ struct FCB {
 	ClusterNo fileFirstIndex;
 	ClusterNo rootDataIndex; 
 	BytesCnt offsetInRootDataIndex; 
-	
-	bool closedFile;
 
 	HANDLE semFile = CreateSemaphore(NULL, 0, 1, NULL);
 
-	FCB(ClusterNo clFileFirst, ClusterNo clRoot, BytesCnt cnt, char m, string fn) {
+	FCB(ClusterNo clFileFirst, ClusterNo clRoot, BytesCnt cnt, char m, string fn, BytesCnt size = 0) {
 		fname = fn;
 		mode = m;
-		fileSize = 0;
+		fileSize = size;
 
 		numOfRefs = 1;
 
 		fileFirstIndex = clFileFirst;
 		rootDataIndex = clRoot;
 		offsetInRootDataIndex = cnt;
-		
-		closedFile = false;
 	}
 };
 
